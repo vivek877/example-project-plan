@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Search, Trash2, Edit2, Loader2, ChevronRight, ChevronDown, Sheet, AlertCircle, RefreshCw } from 'lucide-react'
+import { Plus, Search, Trash2, Edit2, Loader2, ChevronRight, ChevronDown, Sheet, AlertCircle, RefreshCw, Circle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card } from '@/components/ui/card'
@@ -23,6 +23,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import toast from 'react-hot-toast'
 
 // Smartsheet column types
 const COLUMN_TYPES = {
@@ -46,6 +47,15 @@ function App() {
   const [isLoadingSheets, setIsLoadingSheets] = useState(false)
 
   const { sheet, tasks, isLoading, error, refetch, addRow, updateRow, deleteRow } = useSmartsheet(token, sheetId)
+
+  // Auto-refresh every 30 seconds for bi-directional sync
+  useEffect(() => {
+    if (!isConfigured) return;
+    const interval = setInterval(() => {
+      refetch();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [isConfigured, refetch]);
 
   // Load from local storage on mount
   useEffect(() => {
@@ -138,6 +148,12 @@ function App() {
   }
 
   const handleDelete = (row: SmartsheetRow) => {
+    // Protection for phases and project
+    if (row.level <= 1) {
+      toast.error('Phases and Project rows cannot be deleted.');
+      return;
+    }
+
     if (confirm('Are you sure you want to delete this task?')) {
       deleteRow(row.id)
     }
@@ -156,9 +172,21 @@ function App() {
     return cell?.displayValue || cell?.value || '-'
   }
 
+  const renderHealthIndicator = (value: string) => {
+    const val = value.toLowerCase();
+    let colorClass = "text-gray-300";
+    if (val === 'green') colorClass = "text-green-500 fill-green-500";
+    else if (val === 'yellow') colorClass = "text-yellow-500 fill-yellow-500";
+    else if (val === 'red') colorClass = "text-red-500 fill-red-500";
+    else if (val === 'blue') colorClass = "text-blue-500 fill-blue-500";
+    
+    return <Circle className={`w-3.5 h-3.5 ${colorClass}`} />;
+  }
+
   const isEditable = (column: SmartsheetColumn) => {
-    // Basic logic for editable columns
-    return !column.primary // Typically the primary column is editable, but let's allow most for now
+    // Hide formula columns or system columns from editing
+    // Smartsheet API docs: columns have 'formula' and 'systemColumnType'
+    return !(column as any).formula && !(column as any).systemColumnType;
   }
 
   if (!isConfigured) {
@@ -303,7 +331,7 @@ function App() {
                   <tr className="bg-secondary/30 text-left border-b">
                     <th className="p-4 font-semibold text-secondary-foreground/70 text-sm whitespace-nowrap sticky left-0 bg-secondary/30 z-10 w-16">#</th>
                     {sheet?.columns.map(col => (
-                      <th key={col.id} className="p-4 font-semibold text-secondary-foreground/70 text-sm whitespace-nowrap min-w-[150px]">
+                      <th key={col.id} className={`p-4 font-semibold text-secondary-foreground/70 text-sm whitespace-nowrap min-w-[150px] ${col.title.toLowerCase() === 'health' ? 'w-20 min-w-0 text-center' : ''}`}>
                         {col.title}
                       </th>
                     ))}
@@ -328,56 +356,84 @@ function App() {
                       </td>
                     </tr>
                   ) : (
-                    filteredTasks.map((task) => (
-                      <tr key={task.id} className="hover:bg-secondary/20 transition-colors group">
-                        <td className="p-4 text-sm text-secondary-foreground/40 font-mono sticky left-0 bg-white group-hover:bg-secondary/20 z-10">{task.rowNumber}</td>
-                        {sheet?.columns.map(col => (
-                          <td key={col.id} className="p-4 text-sm text-secondary-foreground">
-                            <div className="flex items-center gap-2">
-                              {col.primary && task.level > 0 && (
-                                <div style={{ paddingLeft: `${task.level * 20}px` }} className="flex items-center gap-2">
-                                  {/* Just visual padding for hierarchy */}
+                    filteredTasks.map((task) => {
+                      const isPhase = task.level <= 1;
+                      const isRoot = task.level === 0;
+                      
+                      return (
+                        <tr 
+                          key={task.id} 
+                          className={`
+                            hover:bg-secondary/20 transition-colors group
+                            ${isRoot ? 'bg-primary/10 border-l-4 border-l-primary' : ''}
+                            ${isPhase && !isRoot ? 'bg-secondary/40 border-l-4 border-l-primary/40' : ''}
+                          `}
+                        >
+                          <td className="p-4 text-sm text-secondary-foreground/40 font-mono sticky left-0 bg-inherit group-hover:bg-secondary/20 z-10">{task.rowNumber}</td>
+                          {sheet?.columns.map(col => {
+                            const isHealth = col.title.toLowerCase() === 'health';
+                            const cellValue = getCellValue(task, col.id);
+                            
+                            return (
+                              <td key={col.id} className={`p-4 text-sm text-secondary-foreground ${isHealth ? 'text-center' : ''}`}>
+                                <div className="flex items-center gap-2">
+                                  {col.primary && task.level > 0 && (
+                                    <div style={{ paddingLeft: `${task.level * 24}px` }} className="flex items-center gap-2">
+                                      <div className="w-px h-4 bg-border/50 -ml-3 absolute" />
+                                      {isPhase ? <ChevronDown className="w-3.5 h-3.5 text-primary/60" /> : <div className="w-3.5" />}
+                                    </div>
+                                  )}
+                                  {isHealth ? (
+                                    <div className="flex justify-center w-full">
+                                      {renderHealthIndicator(String(cellValue))}
+                                    </div>
+                                  ) : (
+                                    <span className={`${col.primary ? (isPhase ? 'font-bold text-secondary-foreground' : 'font-medium') : ''}`}>
+                                      {cellValue}
+                                    </span>
+                                  )}
                                 </div>
+                              </td>
+                            );
+                          })}
+                          <td className="p-4 text-right sticky right-0 bg-inherit group-hover:bg-secondary/20 z-10">
+                            <div className="flex items-center justify-end gap-1">
+                              {isPhase && (
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  onClick={() => handleOpenAddDialog(task.id)}
+                                  className="h-8 w-8 text-primary hover:bg-primary/10 rounded-full"
+                                  title="Add sub-task"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                </Button>
                               )}
-                              <span className={col.primary ? 'font-medium' : ''}>
-                                {getCellValue(task, col.id)}
-                              </span>
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                onClick={() => handleOpenEditDialog(task)}
+                                className="h-8 w-8 text-secondary-foreground/60 hover:bg-secondary rounded-full"
+                                title="Edit"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </Button>
+                              {!isPhase && (
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  onClick={() => handleDelete(task)}
+                                  className="h-8 w-8 text-red-500 hover:bg-red-50 rounded-full"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              )}
                             </div>
                           </td>
-                        ))}
-                        <td className="p-4 text-right sticky right-0 bg-white group-hover:bg-secondary/20 z-10">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleOpenAddDialog(task.id)}
-                              className="h-8 w-8 text-primary hover:bg-primary/10 rounded-full"
-                              title="Add sub-task"
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                            </Button>
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleOpenEditDialog(task)}
-                              className="h-8 w-8 text-secondary-foreground/60 hover:bg-secondary rounded-full"
-                              title="Edit"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </Button>
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleDelete(task)}
-                              className="h-8 w-8 text-red-500 hover:bg-red-50 rounded-full"
-                              title="Delete"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -396,7 +452,7 @@ function App() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleAddSubmit} className="grid grid-cols-2 gap-4 py-4">
-            {sheet?.columns.map(col => (
+            {sheet?.columns.filter(isEditable).map(col => (
               <div key={col.id} className={`space-y-2 ${col.primary ? 'col-span-2' : ''}`}>
                 <Label htmlFor={`add-${col.id}`} className="text-xs font-semibold text-secondary-foreground/70 uppercase tracking-wider">{col.title}</Label>
                 {col.type === COLUMN_TYPES.PICKLIST ? (
@@ -455,7 +511,7 @@ function App() {
             <DialogDescription>Update the details for this task.</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleEditSubmit} className="grid grid-cols-2 gap-4 py-4">
-            {sheet?.columns.map(col => (
+            {sheet?.columns.filter(isEditable).map(col => (
               <div key={col.id} className={`space-y-2 ${col.primary ? 'col-span-2' : ''}`}>
                 <Label htmlFor={`edit-${col.id}`} className="text-xs font-semibold text-secondary-foreground/70 uppercase tracking-wider">{col.title}</Label>
                 {col.type === COLUMN_TYPES.PICKLIST ? (
