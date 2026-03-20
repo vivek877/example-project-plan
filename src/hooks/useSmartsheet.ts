@@ -46,9 +46,20 @@ export const useSmartsheet = (token: string, sheetId: string) => {
     // Sort rows by row number to maintain order
     const sortedRows = [...sheet.rows].sort((a, b) => a.rowNumber - b.rowNumber);
     
-    // Build hierarchy (if needed for rendering)
-    // For now, let's just return sorted rows as Smartsheet rows already contain order
-    return sortedRows;
+    // Map each row to its immediate parent row for easy lookup
+    // Since it's sorted by rowNumber, the parent is always a previous row with level = current - 1
+    const taskListWithParents = sortedRows.map((row, index) => {
+      let parentId: number | undefined = undefined;
+      for (let i = index - 1; i >= 0; i--) {
+        if (sortedRows[i].level === row.level - 1) {
+          parentId = sortedRows[i].id;
+          break;
+        }
+      }
+      return { ...row, calculatedParentId: parentId };
+    });
+
+    return taskListWithParents;
   }, [sheet]);
 
   return {

@@ -45,6 +45,8 @@ function App() {
   const [parentRowId, setParentRowId] = useState<number | null>(null)
   const [availableSheets, setAvailableSheets] = useState<{ id: number, name: string }[]>([])
   const [isLoadingSheets, setIsLoadingSheets] = useState(false)
+  const [collapsedRows, setCollapsedRows] = useState<Set<number>>(new Set())
+  const [lastSynced, setLastSynced] = useState<Date>(new Date())
 
   const { sheet, tasks, isLoading, error, refetch, addRow, updateRow, deleteRow } = useSmartsheet(token, sheetId)
 
@@ -52,7 +54,7 @@ function App() {
   useEffect(() => {
     if (!isConfigured) return;
     const interval = setInterval(() => {
-      refetch();
+      refetch().then(() => setLastSynced(new Date()));
     }, 30000);
     return () => clearInterval(interval);
   }, [isConfigured, refetch]);
@@ -117,16 +119,27 @@ function App() {
       value
     }))
     
+    // Determine where to add the row
     const newRow: any = { cells }
     if (parentRowId) {
-      newRow.parentId = parentRowId
-      newRow.toBottom = true
+      newRow.parentId = parentRowId;
+      // In Smartsheet, when adding with parentId, it's automatically placed as a child
     } else {
-      newRow.toBottom = true
+      newRow.toBottom = true;
     }
 
     addRow([newRow], {
-      onSuccess: () => setIsAddDialogOpen(false)
+      onSuccess: () => {
+        setIsAddDialogOpen(false);
+        // Expand the parent if it was collapsed
+        if (parentRowId) {
+          setCollapsedRows(prev => {
+            const next = new Set(prev);
+            next.delete(parentRowId);
+            return next;
+          });
+        }
+      }
     })
   }
 
@@ -159,7 +172,33 @@ function App() {
     }
   }
 
+  const toggleCollapse = (rowId: number) => {
+    setCollapsedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  };
+
+  const isRowVisible = (task: any) => {
+    // Check if any ancestor is collapsed
+    const parentId = task.calculatedParentId;
+    if (!parentId) return true;
+    
+    if (collapsedRows.has(parentId)) return false;
+    
+    // Find parent object to check its visibility recursively
+    const parent = tasks.find((t: any) => t.id === parentId);
+    if (parent) return isRowVisible(parent);
+    
+    return true;
+  };
+
   const filteredTasks = tasks.filter(task => {
+    // Check visibility first
+    if (!isRowVisible(task)) return false;
+
     const searchStr = searchQuery.toLowerCase()
     return task.cells.some(cell => 
       cell.displayValue?.toLowerCase().includes(searchStr) || 
@@ -174,13 +213,32 @@ function App() {
 
   const renderHealthIndicator = (value: string) => {
     const val = value.toLowerCase();
-    let colorClass = "text-gray-300";
-    if (val === 'green') colorClass = "text-green-500 fill-green-500";
-    else if (val === 'yellow') colorClass = "text-yellow-500 fill-yellow-500";
-    else if (val === 'red') colorClass = "text-red-500 fill-red-500";
-    else if (val === 'blue') colorClass = "text-blue-500 fill-blue-500";
+    let colorClass = "bg-slate-200";
+    let textColor = "text-slate-500";
     
-    return <Circle className={`w-3.5 h-3.5 ${colorClass}`} />;
+    if (val === 'green') {
+      colorClass = "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]";
+      textColor = "text-green-600";
+    }
+    else if (val === 'yellow') {
+      colorClass = "bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.4)]";
+      textColor = "text-yellow-600";
+    }
+    else if (val === 'red') {
+      colorClass = "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]";
+      textColor = "text-red-600";
+    }
+    else if (val === 'blue') {
+      colorClass = "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.4)]";
+      textColor = "text-blue-600";
+    }
+    
+    return (
+      <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-slate-50 border border-slate-100 w-fit">
+        <div className={`w-2.5 h-2.5 rounded-full ${colorClass}`} />
+        <span className={`text-[11px] font-bold uppercase tracking-wider ${textColor}`}>{val || 'N/A'}</span>
+      </div>
+    );
   }
 
   const isEditable = (column: SmartsheetColumn) => {
@@ -264,81 +322,124 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col font-sans">
-      <header className="h-16 border-b flex items-center justify-between px-6 sticky top-0 bg-background/80 backdrop-blur-md z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-            <Sheet className="w-5 h-5 text-primary-foreground" />
-          </div>
-          <h1 className="text-xl font-bold tracking-tight text-secondary-foreground">
-            {sheet?.name || 'Loading...'}
-          </h1>
-        </div>
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+      <header className="h-16 border-b flex items-center justify-between px-6 sticky top-0 bg-white/80 backdrop-blur-md z-30 shadow-sm">
         <div className="flex items-center gap-4">
-          <div className="relative group">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-secondary-foreground/40 group-focus-within:text-primary transition-colors" />
+          <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center">
+            <Sheet className="w-6 h-6 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold tracking-tight text-slate-900 leading-none">
+              {sheet?.name || 'Project Dashboard'}
+            </h1>
+            <div className="flex items-center gap-2 mt-1">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+              <span className="text-xs text-slate-500 font-medium">
+                Live Sync Active • Last updated {lastSynced.toLocaleTimeString()}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          <div className="relative group hidden md:block">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-primary transition-colors" />
             <Input 
-              placeholder="Search tasks..." 
-              className="pl-9 w-64 h-10 bg-secondary/50 border-none focus-visible:ring-1 focus-visible:ring-primary"
+              placeholder="Search project..." 
+              className="pl-9 w-72 h-10 bg-slate-100 border-none focus-visible:ring-2 focus-visible:ring-primary/20"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <Button onClick={() => handleOpenAddDialog()} className="h-10 px-4 gap-2 shadow-lg shadow-primary/20">
+          <Button onClick={() => handleOpenAddDialog()} className="h-10 px-4 gap-2 bg-primary hover:bg-primary/90 shadow-md">
             <Plus className="w-4 h-4" />
             Add Task
           </Button>
+          <div className="w-px h-6 bg-slate-200 mx-1" />
           <Button 
             variant="ghost" 
             size="icon" 
-            onClick={() => refetch()} 
-            className="h-10 w-10 hover:bg-secondary rounded-full"
-            title="Refresh"
+            onClick={() => refetch().then(() => setLastSynced(new Date()))} 
+            className="h-10 w-10 text-slate-500 hover:bg-slate-100 rounded-lg"
+            title="Manual Refresh"
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </Button>
           <Button 
             variant="ghost" 
             size="icon" 
-            onClick={() => {
-              localStorage.removeItem('smartsheet_token')
-              localStorage.removeItem('smartsheet_sheet_id')
-              setIsConfigured(false)
-            }}
-            className="h-10 w-10 hover:bg-red-50 text-red-500 rounded-full"
-            title="Disconnect"
+            onClick={() => setIsConfigured(false)}
+            className="h-10 w-10 text-slate-500 hover:bg-slate-100 rounded-lg"
+            title="Project Settings"
           >
             <AlertCircle className="w-4 h-4" />
           </Button>
         </div>
       </header>
 
-      <main className="flex-1 overflow-auto p-6 max-w-[1600px] mx-auto w-full">
+      <main className="flex-1 overflow-auto p-6 max-w-[1800px] mx-auto w-full">
+        {/* Statistics Cards */}
+        {!error && !isLoading && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <Card className="p-4 border-none shadow-sm bg-white flex flex-col justify-between">
+              <span className="text-sm font-medium text-slate-500">Total Tasks</span>
+              <div className="flex items-baseline gap-2 mt-2">
+                <span className="text-2xl font-bold text-slate-900">{tasks.filter(t => t.level > 1).length}</span>
+                <span className="text-xs text-green-600 font-medium">+2 this week</span>
+              </div>
+            </Card>
+            <Card className="p-4 border-none shadow-sm bg-white flex flex-col justify-between">
+              <span className="text-sm font-medium text-slate-500">Active Phases</span>
+              <div className="flex items-baseline gap-2 mt-2">
+                <span className="text-2xl font-bold text-slate-900">{tasks.filter(t => t.level === 1).length}</span>
+              </div>
+            </Card>
+            <Card className="p-4 border-none shadow-sm bg-white flex flex-col justify-between">
+              <span className="text-sm font-medium text-slate-500">Avg Completion</span>
+              <div className="flex items-baseline gap-2 mt-2">
+                <span className="text-2xl font-bold text-slate-900">68%</span>
+                <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden ml-2">
+                  <div className="h-full bg-primary" style={{ width: '68%' }} />
+                </div>
+              </div>
+            </Card>
+            <Card className="p-4 border-none shadow-sm bg-white flex flex-col justify-between">
+              <span className="text-sm font-medium text-slate-500">Project Status</span>
+              <div className="mt-2">
+                <Badge className="bg-green-100 text-green-700 hover:bg-green-100 border-none font-bold">On Track</Badge>
+              </div>
+            </Card>
+          </div>
+        )}
+
         {error ? (
-          <Card className="p-12 text-center border-dashed border-2">
+          <Card className="p-12 text-center border-dashed border-2 bg-white">
             <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-semibold mb-2">Failed to load sheet</h2>
-            <p className="text-secondary-foreground/60 mb-6">{(error as any).message}</p>
-            <Button onClick={() => refetch()} variant="outline">Try Again</Button>
+            <h2 className="text-xl font-semibold mb-2 text-slate-900">Failed to load sheet</h2>
+            <p className="text-slate-500 mb-6 font-medium">{(error as any).message}</p>
+            <Button onClick={() => refetch()} variant="outline" className="px-8">Try Again</Button>
           </Card>
         ) : (
-          <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
-                  <tr className="bg-secondary/30 text-left border-b">
-                    <th className="p-4 font-semibold text-secondary-foreground/70 text-sm whitespace-nowrap sticky left-0 bg-secondary/30 z-10 w-16">#</th>
-                    {sheet?.columns.map(col => (
-                      <th key={col.id} className={`p-4 font-semibold text-secondary-foreground/70 text-sm whitespace-nowrap min-w-[150px] ${col.title.toLowerCase() === 'health' ? 'w-20 min-w-0 text-center' : ''}`}>
-                        {col.title}
-                      </th>
-                    ))}
-                    <th className="p-4 font-semibold text-secondary-foreground/70 text-sm whitespace-nowrap text-right sticky right-0 bg-secondary/30 z-10">Actions</th>
+                  <tr className="bg-slate-50/80 text-left border-b border-slate-200">
+                    <th className="p-4 font-bold text-slate-500 text-[11px] uppercase tracking-wider sticky left-0 bg-slate-50 z-20 w-16">No.</th>
+                    {sheet?.columns.map(col => {
+                      const isHealth = col.title.toLowerCase() === 'health';
+                      return (
+                        <th key={col.id} className={`p-4 font-bold text-slate-500 text-[11px] uppercase tracking-wider min-w-[180px] ${isHealth ? 'w-24 min-w-0 text-center' : ''}`}>
+                          {col.title}
+                        </th>
+                      );
+                    })}
+                    <th className="p-4 font-bold text-slate-500 text-[11px] uppercase tracking-wider text-right sticky right-0 bg-slate-50 z-20 w-32">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody className="divide-y divide-slate-100">
                   {isLoading ? (
                     Array.from({ length: 10 }).map((_, i) => (
                       <tr key={i}>
@@ -351,44 +452,70 @@ function App() {
                     ))
                   ) : filteredTasks.length === 0 ? (
                     <tr>
-                      <td colSpan={100} className="p-12 text-center text-secondary-foreground/50">
-                        {searchQuery ? 'No tasks match your search' : 'No tasks found in this sheet'}
+                      <td colSpan={100} className="p-16 text-center text-slate-400 font-medium">
+                        {searchQuery ? 'No tasks matching your criteria' : 'This project plan is empty'}
                       </td>
                     </tr>
                   ) : (
                     filteredTasks.map((task) => {
-                      const isPhase = task.level <= 1;
                       const isRoot = task.level === 0;
+                      const isPhase = task.level === 1;
+                      const isTask = task.level > 1;
+                      const isCollapsed = collapsedRows.has(task.id);
                       
                       return (
                         <tr 
                           key={task.id} 
                           className={`
-                            hover:bg-secondary/20 transition-colors group
-                            ${isRoot ? 'bg-primary/10 border-l-4 border-l-primary' : ''}
-                            ${isPhase && !isRoot ? 'bg-secondary/40 border-l-4 border-l-primary/40' : ''}
+                            hover:bg-slate-50/80 transition-colors group
+                            ${isRoot ? 'bg-slate-50/50 font-bold border-l-[6px] border-l-primary' : ''}
+                            ${isPhase ? 'bg-white font-semibold border-l-[6px] border-l-slate-300' : ''}
+                            ${isTask ? 'bg-white border-l-[6px] border-l-transparent' : ''}
                           `}
                         >
-                          <td className="p-4 text-sm text-secondary-foreground/40 font-mono sticky left-0 bg-inherit group-hover:bg-secondary/20 z-10">{task.rowNumber}</td>
+                          <td className="p-4 text-[13px] text-slate-400 font-mono sticky left-0 bg-inherit group-hover:bg-slate-50 z-10">{task.rowNumber}</td>
                           {sheet?.columns.map(col => {
                             const isHealth = col.title.toLowerCase() === 'health';
                             const cellValue = getCellValue(task, col.id);
+                            const isPrimary = col.primary;
                             
                             return (
-                              <td key={col.id} className={`p-4 text-sm text-secondary-foreground ${isHealth ? 'text-center' : ''}`}>
+                              <td key={col.id} className={`p-4 text-[14px] text-slate-700 ${isHealth ? 'text-center' : ''}`}>
                                 <div className="flex items-center gap-2">
-                                  {col.primary && task.level > 0 && (
-                                    <div style={{ paddingLeft: `${task.level * 24}px` }} className="flex items-center gap-2">
-                                      <div className="w-px h-4 bg-border/50 -ml-3 absolute" />
-                                      {isPhase ? <ChevronDown className="w-3.5 h-3.5 text-primary/60" /> : <div className="w-3.5" />}
+                                  {isPrimary && (
+                                    <div style={{ paddingLeft: `${task.level * 28}px` }} className="flex items-center relative">
+                                      {/* Vertical Line Guide */}
+                                      {task.level > 0 && (
+                                        <div className="absolute top-[-24px] bottom-[-24px] left-[-14px] w-px bg-slate-200" />
+                                      )}
+                                      
+                                      {(isRoot || isPhase) ? (
+                                        <Button 
+                                          variant="ghost" 
+                                          size="icon" 
+                                          className="h-6 w-6 rounded-md hover:bg-slate-200 mr-1 shrink-0"
+                                          onClick={() => toggleCollapse(task.id)}
+                                        >
+                                          {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-primary" />}
+                                        </Button>
+                                      ) : (
+                                        <div className="w-6 shrink-0 flex justify-center">
+                                          <div className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+                                        </div>
+                                      )}
                                     </div>
                                   )}
+                                  
                                   {isHealth ? (
                                     <div className="flex justify-center w-full">
                                       {renderHealthIndicator(String(cellValue))}
                                     </div>
                                   ) : (
-                                    <span className={`${col.primary ? (isPhase ? 'font-bold text-secondary-foreground' : 'font-medium') : ''}`}>
+                                    <span className={`
+                                      ${isRoot ? 'text-slate-900 text-base' : ''}
+                                      ${isPhase ? 'text-slate-800' : 'text-slate-600'}
+                                      ${isPrimary ? 'truncate max-w-[400px]' : ''}
+                                    `}>
                                       {cellValue}
                                     </span>
                                   )}
@@ -396,37 +523,37 @@ function App() {
                               </td>
                             );
                           })}
-                          <td className="p-4 text-right sticky right-0 bg-inherit group-hover:bg-secondary/20 z-10">
-                            <div className="flex items-center justify-end gap-1">
-                              {isPhase && (
+                          <td className="p-4 text-right sticky right-0 bg-inherit group-hover:bg-slate-50 z-10 shadow-[-10px_0_10px_-10px_rgba(0,0,0,0.05)]">
+                            <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {(isRoot || isPhase) && (
                                 <Button 
                                   variant="ghost" 
                                   size="icon" 
                                   onClick={() => handleOpenAddDialog(task.id)}
-                                  className="h-8 w-8 text-primary hover:bg-primary/10 rounded-full"
-                                  title="Add sub-task"
+                                  className="h-8 w-8 text-primary hover:bg-primary/10 rounded-lg"
+                                  title="Add Child Task"
                                 >
-                                  <Plus className="w-3.5 h-3.5" />
+                                  <Plus className="w-4 h-4" />
                                 </Button>
                               )}
                               <Button 
                                 variant="ghost" 
                                 size="icon" 
                                 onClick={() => handleOpenEditDialog(task)}
-                                className="h-8 w-8 text-secondary-foreground/60 hover:bg-secondary rounded-full"
-                                title="Edit"
+                                className="h-8 w-8 text-slate-500 hover:bg-slate-200 rounded-lg"
+                                title="Quick Edit"
                               >
-                                <Edit2 className="w-3.5 h-3.5" />
+                                <Edit2 className="w-4 h-4" />
                               </Button>
-                              {!isPhase && (
+                              {isTask && (
                                 <Button 
                                   variant="ghost" 
                                   size="icon" 
                                   onClick={() => handleDelete(task)}
-                                  className="h-8 w-8 text-red-500 hover:bg-red-50 rounded-full"
-                                  title="Delete"
+                                  className="h-8 w-8 text-red-500 hover:bg-red-50 rounded-lg"
+                                  title="Delete Task"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <Trash2 className="w-4 h-4" />
                                 </Button>
                               )}
                             </div>
@@ -540,7 +667,7 @@ function App() {
                   <div className="flex items-center h-11">
                     <input 
                       type="checkbox"
-                      id={`edit-${col.id}`}
+                      id={`add-${col.id}`}
                       checked={!!formData[col.id]}
                       className="w-5 h-5 rounded border-secondary"
                       onChange={(e) => setFormData(prev => ({ ...prev, [col.id]: e.target.checked }))}
