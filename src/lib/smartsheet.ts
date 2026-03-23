@@ -1,11 +1,13 @@
-const FUNCTION_URL = "https://m5a8lwxg--smartsheet.functions.blink.new";
+export const FUNCTION_URL = "https://m5a8lwxg--smartsheet.functions.blink.new";
 
 export interface SmartsheetColumn {
   id: number;
   title: string;
-  type: string;
+  type: string; // TEXT_NUMBER, PICKLIST, DATE, CHECKBOX, CONTACT_LIST, etc.
   options?: string[];
   primary?: boolean;
+  systemColumnType?: string; // AUTO_NUMBER, MODIFIED_DATE, etc.
+  formula?: string;
 }
 
 export interface SmartsheetCell {
@@ -21,7 +23,9 @@ export interface SmartsheetRow {
   siblingId?: number;
   expanded?: boolean;
   cells: SmartsheetCell[];
+  // level is NOT returned by default by Smartsheet API — we compute it
   level: number;
+  calculatedParentId?: number;
 }
 
 export interface SmartsheetData {
@@ -31,104 +35,128 @@ export interface SmartsheetData {
   rows: SmartsheetRow[];
 }
 
-export class SmartsheetService {
-  private static getHeaders(token?: string) {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
+function getHeaders(token: string) {
+  return {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`,
+  };
+}
+
+export async function apiGetSheet(token: string, sheetId: string): Promise<SmartsheetData> {
+  const url = new URL(FUNCTION_URL);
+  url.searchParams.set("action", "getSheet");
+  url.searchParams.set("sheetId", sheetId);
+
+  const res = await fetch(url.toString(), { headers: getHeaders(token) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.error || "Failed to fetch sheet");
+
+  // Smartsheet API returns rows with `parentId` field
+  // We compute `level` by building a parentId -> level map
+  const rows: any[] = data.rows || [];
+  const levelMap: Record<number, number> = {};
+
+  const processedRows: SmartsheetRow[] = rows.map((row: any) => {
+    let level = 0;
+    if (row.parentId) {
+      level = (levelMap[row.parentId] ?? 0) + 1;
     }
-    return headers;
+    levelMap[row.id] = level;
+    return { ...row, level };
+  });
+
+  return { ...data, rows: processedRows };
+}
+
+export async function apiGetSheetList(token: string) {
+  const url = new URL(FUNCTION_URL);
+  url.searchParams.set("action", "getSheetList");
+
+  const res = await fetch(url.toString(), { headers: getHeaders(token) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.error || "Failed to list sheets");
+  return data;
+}
+
+export interface AddRowPayload {
+  cells: { columnId: number; value: any }[];
+  parentId?: number;
+  toBottom?: boolean;
+  siblingId?: number;
+}
+
+export async function apiAddRow(token: string, sheetId: string, row: AddRowPayload) {
+  const url = new URL(FUNCTION_URL);
+  url.searchParams.set("action", "addRow");
+  url.searchParams.set("sheetId", sheetId);
+
+  const body: any = { cells: row.cells };
+  if (row.parentId) {
+    body.parentId = row.parentId;
+    body.toBottom = true;
+  } else {
+    body.toBottom = true;
   }
 
-  static async getSheet(token: string, sheetId: string): Promise<SmartsheetData> {
-    const url = new URL(FUNCTION_URL);
-    url.searchParams.set("action", "getSheet");
-    url.searchParams.set("sheetId", sheetId);
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: getHeaders(token),
+    body: JSON.stringify([body]), // Smartsheet expects array
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.error || "Failed to add row");
+  return data;
+}
 
-    const response = await fetch(url.toString(), {
-      headers: this.getHeaders(token),
-    });
+export interface UpdateRowPayload {
+  id: number;
+  cells: { columnId: number; value: any }[];
+}
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to fetch sheet");
-    }
+export async function apiUpdateRow(token: string, sheetId: string, row: UpdateRowPayload) {
+  const url = new URL(FUNCTION_URL);
+  url.searchParams.set("action", "updateRow");
+  url.searchParams.set("sheetId", sheetId);
 
-    return response.json();
-  }
+  const res = await fetch(url.toString(), {
+    method: "PUT",
+    headers: getHeaders(token),
+    body: JSON.stringify([{ id: row.id, cells: row.cells }]), // Smartsheet expects array
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.error || "Failed to update row");
+  return data;
+}
 
-  static async addRow(token: string, sheetId: string, row: any) {
-    const url = new URL(FUNCTION_URL);
-    url.searchParams.set("action", "addRow");
-    url.searchParams.set("sheetId", sheetId);
+export async function apiDeleteRow(token: string, sheetId: string, rowId: number) {
+  const url = new URL(FUNCTION_URL);
+  url.searchParams.set("action", "deleteRow");
+  url.searchParams.set("sheetId", sheetId);
+  url.searchParams.set("rowId", String(rowId));
 
-    const response = await fetch(url.toString(), {
-      method: "POST",
-      headers: this.getHeaders(token),
-      body: JSON.stringify(row),
-    });
+  const res = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: getHeaders(token),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.error || "Failed to delete row");
+  return data;
+}
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to add row");
-    }
+// Column types we care about for form rendering
+export const COL_TYPE = {
+  TEXT_NUMBER: "TEXT_NUMBER",
+  PICKLIST: "PICKLIST",
+  DATE: "DATE",
+  CHECKBOX: "CHECKBOX",
+  CONTACT_LIST: "CONTACT_LIST",
+};
 
-    return response.json();
-  }
+export function isSystemColumn(col: SmartsheetColumn): boolean {
+  return !!(col.systemColumnType || col.formula);
+}
 
-  static async updateRow(token: string, sheetId: string, row: any) {
-    const url = new URL(FUNCTION_URL);
-    url.searchParams.set("action", "updateRow");
-    url.searchParams.set("sheetId", sheetId);
-
-    const response = await fetch(url.toString(), {
-      method: "PUT",
-      headers: this.getHeaders(token),
-      body: JSON.stringify(row),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to update row");
-    }
-
-    return response.json();
-  }
-
-  static async deleteRow(token: string, sheetId: string, rowId: number) {
-    const url = new URL(FUNCTION_URL);
-    url.searchParams.set("action", "deleteRow");
-    url.searchParams.set("sheetId", sheetId);
-    url.searchParams.set("rowId", rowId.toString());
-
-    const response = await fetch(url.toString(), {
-      method: "DELETE",
-      headers: this.getHeaders(token),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to delete row");
-    }
-
-    return response.json();
-  }
-
-  static async getSheetList(token: string) {
-    const url = new URL(FUNCTION_URL);
-    url.searchParams.set("action", "getSheetList");
-
-    const response = await fetch(url.toString(), {
-      headers: this.getHeaders(token),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to fetch sheets");
-    }
-
-    return response.json();
-  }
+export function isReadOnly(col: SmartsheetColumn): boolean {
+  // Row ID and system columns are always read-only
+  return isSystemColumn(col);
 }

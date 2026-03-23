@@ -1,5 +1,3 @@
-import { createClient } from "npm:@blinkdotnew/sdk";
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -14,92 +12,105 @@ async function handler(req: Request): Promise<Response> {
   }
 
   try {
-    // Get access token from header or environment
     const authHeader = req.headers.get("Authorization");
     const accessToken = authHeader?.replace("Bearer ", "") || Deno.env.get("SMARTSHEET_ACCESS_TOKEN");
-    const sheetId = Deno.env.get("SMARTSHEET_SHEET_ID");
 
     if (!accessToken) {
       return new Response(
-        JSON.stringify({ error: "SMARTSHEET_ACCESS_TOKEN required. Configure in settings or provide via Authorization header." }),
+        JSON.stringify({ error: "SMARTSHEET_ACCESS_TOKEN required." }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const url = new URL(req.url);
     const action = url.searchParams.get("action");
+    const envSheetId = Deno.env.get("SMARTSHEET_SHEET_ID");
+    const targetSheetId = url.searchParams.get("sheetId") || envSheetId;
 
-    // Get sheet ID from query param or environment
-    const targetSheetId = url.searchParams.get("sheetId") || sheetId;
-
-    if (!targetSheetId) {
-      return new Response(
-        JSON.stringify({ error: "Sheet ID required. Set SMARTSHEET_SHEET_ID or provide smartsheetUrl" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const headers = {
+    const ssHeaders = {
       "Authorization": `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     };
 
-    let response;
-    let body;
+    let response: Response;
+    let body: any;
 
     if (action === "getSheet") {
-      // Get sheet metadata and data
-      response = await fetch(`${SMARTSHEET_API_BASE}/sheets/${targetSheetId}`, {
-        headers,
+      if (!targetSheetId) {
+        return new Response(JSON.stringify({ error: "sheetId required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      // Fetch with expanded rows to get level information
+      response = await fetch(`${SMARTSHEET_API_BASE}/sheets/${targetSheetId}?include=parentId`, {
+        headers: ssHeaders,
       });
       body = await response.json();
-    } else if (action === "getColumns") {
-      // Get only columns
-      response = await fetch(`${SMARTSHEET_API_BASE}/sheets/${targetSheetId}/columns`, {
-        headers,
-      });
+
+    } else if (action === "getSheetList") {
+      response = await fetch(`${SMARTSHEET_API_BASE}/sheets`, { headers: ssHeaders });
       body = await response.json();
+
     } else if (action === "addRow") {
-      // Add a new row
-      const rowData = await req.json();
+      if (!targetSheetId) {
+        return new Response(JSON.stringify({ error: "sheetId required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      // Smartsheet expects an array of row objects
+      const payload = await req.json();
+      // payload should be an array of rows already
+      const rows = Array.isArray(payload) ? payload : [payload];
+
       response = await fetch(`${SMARTSHEET_API_BASE}/sheets/${targetSheetId}/rows`, {
         method: "POST",
-        headers,
-        body: JSON.stringify({ ...rowData, returnOf: true }),
+        headers: ssHeaders,
+        body: JSON.stringify(rows),
       });
       body = await response.json();
+
     } else if (action === "updateRow") {
-      // Update an existing row
-      const rowData = await req.json();
+      if (!targetSheetId) {
+        return new Response(JSON.stringify({ error: "sheetId required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const payload = await req.json();
+      const rows = Array.isArray(payload) ? payload : [payload];
+
       response = await fetch(`${SMARTSHEET_API_BASE}/sheets/${targetSheetId}/rows`, {
         method: "PUT",
-        headers,
-        body: JSON.stringify({ ...rowData, returnOf: true }),
+        headers: ssHeaders,
+        body: JSON.stringify(rows),
       });
       body = await response.json();
+
     } else if (action === "deleteRow") {
-      // Delete a row
-      const rowId = url.searchParams.get("rowId");
-      if (!rowId) {
-        return new Response(
-          JSON.stringify({ error: "rowId required" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+      if (!targetSheetId) {
+        return new Response(JSON.stringify({ error: "sheetId required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
-      response = await fetch(`${SMARTSHEET_API_BASE}/sheets/${targetSheetId}/rows/${rowId}`, {
-        method: "DELETE",
-        headers,
-      });
+      // Smartsheet delete supports multiple rowIds via query params
+      const rowIds = url.searchParams.get("rowIds");
+      const rowId = url.searchParams.get("rowId");
+      const idsParam = rowIds || rowId;
+
+      if (!idsParam) {
+        return new Response(JSON.stringify({ error: "rowId or rowIds required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      response = await fetch(
+        `${SMARTSHEET_API_BASE}/sheets/${targetSheetId}/rows?ids=${idsParam}&ignoreRowsNotFound=true`,
+        { method: "DELETE", headers: ssHeaders }
+      );
       body = await response.json();
-    } else if (action === "getSheetList") {
-      // List all sheets (for user to select)
-      response = await fetch(`${SMARTSHEET_API_BASE}/sheets`, {
-        headers,
-      });
-      body = await response.json();
+
     } else {
       return new Response(
-        JSON.stringify({ error: "Invalid action. Use: getSheet, getColumns, addRow, updateRow, deleteRow, getSheetList" }),
+        JSON.stringify({ error: `Unknown action: ${action}` }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -108,6 +119,7 @@ async function handler(req: Request): Promise<Response> {
       status: response.status,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
+
   } catch (error) {
     console.error("Smartsheet proxy error:", error);
     return new Response(

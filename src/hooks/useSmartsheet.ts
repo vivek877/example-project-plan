@@ -1,75 +1,93 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { SmartsheetService, SmartsheetData, SmartsheetRow, SmartsheetColumn } from '@/lib/smartsheet';
+import {
+  SmartsheetData, SmartsheetRow,
+  apiGetSheet, apiAddRow, apiUpdateRow, apiDeleteRow, AddRowPayload, UpdateRowPayload
+} from '@/lib/smartsheet';
 import toast from 'react-hot-toast';
 
 export const useSmartsheet = (token: string, sheetId: string) => {
   const queryClient = useQueryClient();
+  const queryKey = ['sheet', sheetId, token];
 
   const { data: sheet, isLoading, error, refetch } = useQuery<SmartsheetData>({
-    queryKey: ['sheet', sheetId],
-    queryFn: () => SmartsheetService.getSheet(token, sheetId),
+    queryKey,
+    queryFn: () => apiGetSheet(token, sheetId),
     enabled: !!token && !!sheetId,
-    staleTime: 1000 * 60, // 1 minute
+    staleTime: 1000 * 20, // 20s
+    retry: 1,
   });
 
   const addRowMutation = useMutation({
-    mutationFn: (rowData: any) => SmartsheetService.addRow(token, sheetId, rowData),
+    mutationFn: (row: AddRowPayload) => apiAddRow(token, sheetId, row),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sheet', sheetId] });
-      toast.success('Task added successfully');
+      queryClient.invalidateQueries({ queryKey });
+      toast.success('Task created successfully');
     },
-    onError: (err: any) => toast.error(`Error adding task: ${err.message}`),
+    onError: (err: any) => toast.error(`Failed to create: ${err.message}`),
   });
 
   const updateRowMutation = useMutation({
-    mutationFn: (rowData: any) => SmartsheetService.updateRow(token, sheetId, rowData),
+    mutationFn: (row: UpdateRowPayload) => apiUpdateRow(token, sheetId, row),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sheet', sheetId] });
-      toast.success('Task updated successfully');
+      queryClient.invalidateQueries({ queryKey });
+      toast.success('Task updated');
     },
-    onError: (err: any) => toast.error(`Error updating task: ${err.message}`),
+    onError: (err: any) => toast.error(`Failed to update: ${err.message}`),
   });
 
   const deleteRowMutation = useMutation({
-    mutationFn: (rowId: number) => SmartsheetService.deleteRow(token, sheetId, rowId),
+    mutationFn: (rowId: number) => apiDeleteRow(token, sheetId, rowId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sheet', sheetId] });
-      toast.success('Task deleted successfully');
+      queryClient.invalidateQueries({ queryKey });
+      toast.success('Task deleted');
     },
-    onError: (err: any) => toast.error(`Error deleting task: ${err.message}`),
+    onError: (err: any) => toast.error(`Failed to delete: ${err.message}`),
   });
 
-  const tasks = useMemo(() => {
-    if (!sheet) return [];
-    
-    // Sort rows by row number to maintain order
-    const sortedRows = [...sheet.rows].sort((a, b) => a.rowNumber - b.rowNumber);
-    
-    // Map each row to its immediate parent row for easy lookup
-    // Since it's sorted by rowNumber, the parent is always a previous row with level = current - 1
-    const taskListWithParents = sortedRows.map((row, index) => {
-      let parentId: number | undefined = undefined;
-      for (let i = index - 1; i >= 0; i--) {
-        if (sortedRows[i].level === row.level - 1) {
-          parentId = sortedRows[i].id;
-          break;
-        }
-      }
-      return { ...row, calculatedParentId: parentId };
-    });
-
-    return taskListWithParents;
+  // Compute parent mapping from Smartsheet's own parentId field
+  const tasks = useMemo((): (SmartsheetRow & { calculatedParentId?: number })[] => {
+    if (!sheet?.rows) return [];
+    const sorted = [...sheet.rows].sort((a, b) => a.rowNumber - b.rowNumber);
+    return sorted.map(row => ({
+      ...row,
+      calculatedParentId: row.parentId, // Smartsheet already gives us parentId
+    }));
   }, [sheet]);
+
+  // Compute real completion percentage from % Complete column
+  const completionStats = useMemo(() => {
+    if (!sheet) return { avg: 0, total: 0, completed: 0 };
+    const pctCol = sheet.columns.find(c =>
+      c.title.toLowerCase().includes('complete') || c.title.toLowerCase().includes('%')
+    );
+    if (!pctCol) return { avg: 0, total: 0, completed: 0 };
+    const taskRows = tasks.filter(t => t.level > 1);
+    if (!taskRows.length) return { avg: 0, total: 0, completed: 0 };
+    let sum = 0;
+    let count = 0;
+    taskRows.forEach(row => {
+      const cell = row.cells.find(c => c.columnId === pctCol.id);
+      const v = parseFloat(String(cell?.value || '0'));
+      if (!isNaN(v)) { sum += v; count++; }
+    });
+    const avg = count > 0 ? Math.round(sum / count) : 0;
+    return { avg, total: taskRows.length, completed: taskRows.filter(r => {
+      const cell = r.cells.find(c => c.columnId === pctCol.id);
+      return parseFloat(String(cell?.value || '0')) >= 100;
+    }).length };
+  }, [tasks, sheet]);
 
   return {
     sheet,
     tasks,
     isLoading,
+    isMutating: addRowMutation.isPending || updateRowMutation.isPending || deleteRowMutation.isPending,
     error,
     refetch,
-    addRow: addRowMutation.mutate,
-    updateRow: updateRowMutation.mutate,
-    deleteRow: deleteRowMutation.mutate,
+    completionStats,
+    addRow: addRowMutation.mutateAsync,
+    updateRow: updateRowMutation.mutateAsync,
+    deleteRow: deleteRowMutation.mutateAsync,
   };
 };
