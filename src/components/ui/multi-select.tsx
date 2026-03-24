@@ -1,59 +1,43 @@
 "use client"
-
 import * as React from "react"
-import { X, ChevronDown, Check, User } from "lucide-react"
+import { X, ChevronDown, Check, UserCircle, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 
-export interface MultiSelectOption {
-  value: string
-  label: string
-  email?: string
+export interface MultiSelectOption { value: string; label: string; email?: string }
+
+function colorFor(s: string) {
+  const c = ['from-violet-400 to-purple-500','from-blue-400 to-cyan-500','from-emerald-400 to-teal-500',
+    'from-orange-400 to-amber-500','from-pink-400 to-rose-500','from-indigo-400 to-blue-500']
+  let h = 0; for (const ch of s) h = ((h << 5) - h) + ch.charCodeAt(0)
+  return c[Math.abs(h) % c.length]
 }
 
-interface MultiSelectProps {
+function initials(s: string) {
+  return s.split(/[\s@._-]+/).map(w => w[0]).filter(Boolean).join('').toUpperCase().slice(0,2) || '?'
+}
+
+interface Props {
   options: MultiSelectOption[]
   value: string[]
-  onChange: (values: string[]) => void
+  onChange: (v: string[]) => void
   placeholder?: string
-  className?: string
-  maxDisplay?: number
+  error?: boolean
 }
 
-export function MultiSelect({
-  options,
-  value,
-  onChange,
-  placeholder = "Select...",
-  className,
-  maxDisplay = 3,
-}: MultiSelectProps) {
+export function MultiSelect({ options, value, onChange, placeholder = "Select...", error }: Props) {
   const [open, setOpen] = React.useState(false)
-  const [search, setSearch] = React.useState("")
+  const [q, setQ] = React.useState("")
 
   const filtered = options.filter(o =>
-    o.label.toLowerCase().includes(search.toLowerCase()) ||
-    (o.email || "").toLowerCase().includes(search.toLowerCase())
+    o.label.toLowerCase().includes(q.toLowerCase()) ||
+    (o.email || "").toLowerCase().includes(q.toLowerCase())
   )
 
   const toggle = (v: string) => {
-    if (value.includes(v)) {
-      onChange(value.filter(x => x !== v))
-    } else {
-      onChange([...value, v])
-    }
+    onChange(value.includes(v) ? value.filter(x => x !== v) : [...value, v])
   }
-
-  const remove = (v: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    onChange(value.filter(x => x !== v))
-  }
-
-  const displayedLabels = value.slice(0, maxDisplay).map(v => {
-    const opt = options.find(o => o.value === v)
-    return opt?.label || v
-  })
-  const extra = value.length - maxDisplay
+  const removeItem = (v: string, e: React.MouseEvent) => { e.stopPropagation(); onChange(value.filter(x => x !== v)) }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -61,89 +45,94 @@ export function MultiSelect({
         <button
           type="button"
           className={cn(
-            "min-h-10 w-full flex items-center gap-1.5 flex-wrap px-3 py-2 rounded-lg border border-slate-200 bg-white hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-400/20 focus:border-blue-400 transition-all text-left",
-            className
+            "min-h-11 w-full flex items-start gap-1.5 flex-wrap px-3 py-2 rounded-xl border-2 transition-all duration-200 text-left focus:outline-none",
+            "bg-white",
+            error ? "border-red-300 bg-red-50/30" : "border-slate-200 hover:border-blue-300 focus:border-blue-400"
           )}
         >
           {value.length === 0 ? (
-            <span className="text-slate-400 text-sm">{placeholder}</span>
+            <span className="text-slate-400 text-sm self-center flex-1 py-0.5">{placeholder}</span>
           ) : (
             <>
-              {displayedLabels.map((label, i) => (
-                <span
-                  key={value[i]}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full border border-blue-100"
-                >
-                  <User className="w-2.5 h-2.5" />
-                  {label}
-                  <X
-                    className="w-2.5 h-2.5 hover:text-blue-900 cursor-pointer"
-                    onClick={e => remove(value[i], e)}
-                  />
-                </span>
-              ))}
-              {extra > 0 && (
-                <span className="text-xs text-slate-500 font-medium">+{extra} more</span>
-              )}
+              {value.map((v) => {
+                const opt = options.find(o => o.value === v)
+                const label = opt?.label || v
+                return (
+                  <span key={v} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-lg border border-blue-100">
+                    <div className={`w-3.5 h-3.5 rounded-full bg-gradient-to-br ${colorFor(label)} flex items-center justify-center text-white text-[8px] font-bold flex-shrink-0`}>
+                      {initials(label)[0]}
+                    </div>
+                    {label}
+                    <X className="w-2.5 h-2.5 text-blue-400 hover:text-blue-700 cursor-pointer" onClick={e => removeItem(v, e)} />
+                  </span>
+                )
+              })}
             </>
           )}
-          <ChevronDown className="ml-auto w-4 h-4 text-slate-400 flex-shrink-0" />
+          <ChevronDown className="ml-auto w-4 h-4 text-slate-400 flex-shrink-0 self-center" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-72 p-0 shadow-xl border-slate-200 rounded-xl overflow-hidden" align="start">
-        <div className="p-2 border-b border-slate-100">
-          <input
-            className="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400/20 focus:border-blue-400 placeholder:text-slate-400"
-            placeholder="Search..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            autoFocus
-          />
+      <PopoverContent className="w-72 p-0 shadow-2xl border border-slate-200 rounded-2xl overflow-hidden bg-white" align="start">
+        {/* Search */}
+        <div className="p-3 border-b border-slate-100">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              className="w-full pl-8 pr-3 py-2 text-sm rounded-xl bg-slate-50 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400/20 focus:border-blue-400 placeholder:text-slate-400"
+              placeholder="Search people..."
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              autoFocus
+            />
+          </div>
         </div>
-        <div className="max-h-56 overflow-y-auto py-1">
+
+        <div className="max-h-52 overflow-y-auto">
           {filtered.length === 0 ? (
-            <div className="py-4 text-center text-sm text-slate-400">No results</div>
+            <div className="py-8 text-center text-sm text-slate-400 flex flex-col items-center gap-2">
+              <UserCircle className="w-8 h-8 text-slate-200" />
+              No results
+            </div>
           ) : (
             filtered.map(opt => {
-              const selected = value.includes(opt.value)
+              const sel = value.includes(opt.value)
               return (
                 <button
                   key={opt.value}
                   type="button"
                   onClick={() => toggle(opt.value)}
                   className={cn(
-                    "w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-slate-50 transition-colors",
-                    selected && "bg-blue-50/50"
+                    "w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors",
+                    sel ? "bg-blue-50" : "hover:bg-slate-50"
                   )}
                 >
                   <div className={cn(
                     "w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all",
-                    selected ? "bg-blue-500 border-blue-500" : "border-slate-300"
+                    sel ? "bg-blue-500 border-blue-500" : "border-slate-300"
                   )}>
-                    {selected && <Check className="w-2.5 h-2.5 text-white" />}
+                    {sel && <Check className="w-2.5 h-2.5 text-white" />}
                   </div>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0">
-                      {opt.label.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-slate-800 truncate">{opt.label}</div>
-                      {opt.email && <div className="text-xs text-slate-400 truncate">{opt.email}</div>}
-                    </div>
+                  <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${colorFor(opt.label)} flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0 shadow-sm`}>
+                    {initials(opt.label)}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-800 truncate">{opt.label}</p>
+                    {opt.email && <p className="text-xs text-slate-400 truncate">{opt.email}</p>}
                   </div>
                 </button>
               )
             })
           )}
         </div>
+
         {value.length > 0 && (
-          <div className="p-2 border-t border-slate-100">
+          <div className="p-2 border-t border-slate-100 bg-slate-50/50">
             <button
               type="button"
               onClick={() => onChange([])}
-              className="w-full text-center text-xs text-red-500 hover:text-red-600 font-medium py-1"
+              className="w-full text-center text-xs text-red-500 hover:text-red-600 font-semibold py-1.5 rounded-lg hover:bg-red-50 transition-colors"
             >
-              Clear all ({value.length})
+              Clear all ({value.length} selected)
             </button>
           </div>
         )}
